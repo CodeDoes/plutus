@@ -380,6 +380,8 @@ plutus/
 │       ├── code_analysis_worker.py # Code analysis worker
 │       └── custom_worker.py        # Dynamic tool worker
 ├── ui/                             # React web interface
+├── bridge/                         # Local ↔ cloud workspace sync
+├── shared/                         # Shared models and memory (used by local + cloud)
 ├── tests/
 │   ├── test_subprocess.py          # 34 comprehensive tests
 │   ├── test_config.py
@@ -388,6 +390,17 @@ plutus/
 ├── pyproject.toml
 └── README.md
 ```
+
+## Cloud Version
+
+A hosted, fully managed version of Plutus is available at [useplutus.ai](https://useplutus.ai) for users who want a zero-setup cloud experience. The cloud version includes:
+
+- Persistent cloud workspace with push/pull sync to your local Plutus
+- Multi-device access via any browser
+- Managed infrastructure — no API keys or server setup required
+- Priority support
+
+The cloud backend is **closed-source** and maintained in a private repository. If you are interested in self-hosting the full cloud stack, please [get in touch](https://useplutus.ai).
 
 ## License
 
