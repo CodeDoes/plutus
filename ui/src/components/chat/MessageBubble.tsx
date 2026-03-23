@@ -645,6 +645,29 @@ export function MessageBubble({ message, send }: Props) {
       );
     }
 
+    if (typeof content === "string" && content.startsWith("__STALL_WARNING__:")) {
+      const rest = content.replace("__STALL_WARNING__:", "");
+      const parts = rest.split(":");
+      const seconds = parseInt(parts[0] || "0", 10);
+      const autoCancelled = parts[1] === "1";
+      const stallMsg = parts.slice(2).join(":") || "Plutus may be stuck.";
+      return (
+        <div className="flex items-center justify-center py-3 animate-fade-in">
+          <div
+            className="px-4 py-2.5 rounded-xl text-[12px] font-medium flex items-start gap-2.5 max-w-md"
+            style={{
+              background: autoCancelled ? "rgba(239, 68, 68, 0.08)" : "rgba(245, 158, 11, 0.08)",
+              color: autoCancelled ? "rgba(252, 165, 165, 0.9)" : "rgba(251, 191, 36, 0.9)",
+              border: autoCancelled ? "1px solid rgba(239, 68, 68, 0.18)" : "1px solid rgba(245, 158, 11, 0.18)",
+            }}
+          >
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span>{stallMsg}</span>
+          </div>
+        </div>
+      );
+    }
+
     if (typeof content === "string" && content.startsWith("[HEARTBEAT]")) {
       return (
         <div className="flex items-center justify-center py-2 animate-fade-in">

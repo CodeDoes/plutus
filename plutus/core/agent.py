@@ -978,6 +978,14 @@ class AgentRuntime:
         # Processing flag — True while process_message() is actively running
         self._processing = False
 
+        # Stall detection — timestamp of the last event emitted during processing
+        import time as _time
+        self._last_activity: float = _time.monotonic()
+        # Warn the UI after this many seconds of silence while processing
+        self.stall_warn_seconds: int = 60
+        # Auto-cancel after this many seconds of silence (0 = disabled)
+        self.stall_cancel_seconds: int = 0
+
     @property
     def conversation(self) -> ConversationManager:
         return self._conversation
@@ -1014,6 +1022,12 @@ class AgentRuntime:
     def is_processing(self) -> bool:
         """True while process_message() is actively running."""
         return self._processing
+
+    @property
+    def seconds_since_activity(self) -> float:
+        """Seconds elapsed since the last agent event was emitted."""
+        import time as _time
+        return _time.monotonic() - self._last_activity
 
     def on_event(self, handler: Callable[[AgentEvent], Any]) -> None:
         """Register an event handler for agent events."""
@@ -1359,6 +1373,8 @@ class AgentRuntime:
 
         self._cancelled = False
         self._processing = True
+        import time as _time
+        self._last_activity = _time.monotonic()
         yield AgentEvent("thinking", {"message": "Processing your request..."})
 
         tool_defs = self._get_tool_definitions()
@@ -1387,6 +1403,9 @@ class AgentRuntime:
                 self._processing = False
                 yield AgentEvent("error", {"message": f"LLM error: {e}"})
                 return
+
+            # Update activity timestamp after every LLM response
+            self._last_activity = _time.monotonic()
 
             if self._cancelled:
                 self._processing = False
@@ -1548,6 +1567,8 @@ class AgentRuntime:
                     "tool_result",
                     {"id": tc.id, "tool": tc.name, "result": result_text},
                 )
+                # Update activity timestamp after each tool completes
+                self._last_activity = _time.monotonic()
                 await self._conversation.add_tool_result(tc.id, result_text)
 
         # If we exhausted all rounds, save a checkpoint before stopping

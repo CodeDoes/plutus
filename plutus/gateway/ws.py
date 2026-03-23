@@ -88,6 +88,63 @@ manager = ConnectionManager()
 _active_tasks: dict[str, asyncio.Task] = {}
 
 
+async def _watchdog(agent: Any, session_id: str, poll_interval: int = 15) -> None:
+    """Background task that detects silent agent stalls and broadcasts a warning.
+
+    Polls ``agent.seconds_since_activity`` every ``poll_interval`` seconds while
+    the agent is processing.  If no event has been emitted for longer than
+    ``agent.stall_warn_seconds``, a ``stall_warning`` WebSocket event is broadcast
+    to all connected clients.  If ``agent.stall_cancel_seconds`` is set (> 0) and
+    the silence exceeds that threshold, the agent is cancelled automatically.
+    """
+    warned = False
+    while True:
+        await asyncio.sleep(poll_interval)
+        if not agent.is_processing:
+            # Agent finished normally — nothing to do.
+            break
+        silence = agent.seconds_since_activity
+        warn_after = getattr(agent, 'stall_warn_seconds', 60)
+        cancel_after = getattr(agent, 'stall_cancel_seconds', 0)
+        if cancel_after > 0 and silence >= cancel_after:
+            logger.warning(
+                f"[watchdog] Agent stalled for {silence:.0f}s in session {session_id} "
+                f"— auto-cancelling (threshold={cancel_after}s)"
+            )
+            agent.cancel()
+            await manager.broadcast({
+                "type": "stall_warning",
+                "session_id": session_id,
+                "seconds": int(silence),
+                "auto_cancelled": True,
+                "message": (
+                    f"Plutus appears to have stalled (no activity for {int(silence)}s) "
+                    "and has been automatically stopped."
+                ),
+            })
+            break
+        if silence >= warn_after and not warned:
+            logger.warning(
+                f"[watchdog] Agent silent for {silence:.0f}s in session {session_id} "
+                f"— broadcasting stall_warning"
+            )
+            warned = True
+            await manager.broadcast({
+                "type": "stall_warning",
+                "session_id": session_id,
+                "seconds": int(silence),
+                "auto_cancelled": False,
+                "message": (
+                    f"Plutus hasn't made progress in {int(silence)}s. "
+                    "It may be stuck waiting for a slow API response. "
+                    "You can stop the task and try again."
+                ),
+            })
+        elif silence < warn_after:
+            # Activity resumed after a stall — reset the warned flag
+            warned = False
+
+
 def create_ws_router() -> APIRouter:
     router = APIRouter()
 
@@ -396,25 +453,33 @@ async def _handle_standard_chat(
     disconnected = False
     try:
         async with lock:
-            async for event in agent.process_message(user_text, attachments=attachments):
-                if disconnected:
-                    continue
-                try:
-                    payload = event.to_dict()
-                    payload["session_id"] = session_id
-                    await ws.send_json(payload)
-                except (WebSocketDisconnect, RuntimeError, Exception) as send_err:
-                    logger.warning(f"Client disconnected during processing [{session_id}]: {send_err}")
-                    disconnected = True
-                    continue
-
-                if event.type == "tool_approval_needed":
+            # Start watchdog to detect silent stalls
+            watchdog_task = asyncio.create_task(
+                _watchdog(agent, session_id),
+                name=f"watchdog-{session_id}",
+            )
+            try:
+                async for event in agent.process_message(user_text, attachments=attachments):
+                    if disconnected:
+                        continue
                     try:
                         payload = event.to_dict()
                         payload["session_id"] = session_id
-                        await manager.broadcast(payload)
-                    except Exception:
-                        pass
+                        await ws.send_json(payload)
+                    except (WebSocketDisconnect, RuntimeError, Exception) as send_err:
+                        logger.warning(f"Client disconnected during processing [{session_id}]: {send_err}")
+                        disconnected = True
+                        continue
+
+                    if event.type == "tool_approval_needed":
+                        try:
+                            payload = event.to_dict()
+                            payload["session_id"] = session_id
+                            await manager.broadcast(payload)
+                        except Exception:
+                            pass
+            finally:
+                watchdog_task.cancel()
     except Exception as e:
         logger.exception(f"Standard agent error [{session_id}]")
         if not disconnected:

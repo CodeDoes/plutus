@@ -381,6 +381,17 @@ export default function App() {
           // WhatsApp connected — clear the pairing code
           setWhatsappPairingCode(null);
           break;
+
+        case "stall_warning":
+          // Agent has been silent for too long — surface a warning in chat
+          addMessage({
+            role: "system",
+            content: `__STALL_WARNING__:${msg.seconds || 0}:${msg.auto_cancelled ? "1" : "0"}:${msg.message || "Plutus may be stuck."}`,
+          }, sid);
+          if (msg.auto_cancelled) {
+            setProcessing(false, sid);
+          }
+          break;
       }
     },
     [addMessage, setProcessing, setConversationId, clearMessages, setSessions, addSession, removeSession, setActiveSessionId, setWhatsappPairingCode, updateSession]
