@@ -1661,6 +1661,12 @@ class AgentRuntime:
                         "Update the plan step to 'waiting_for_user' and stop."
                     )
 
+        # Touch activity timestamp at the START of tool execution so the watchdog
+        # does not fire false stall warnings during long-running tool calls (e.g.
+        # web_deploy scaffold running npm install for 60-180 s).
+        import time as _time
+        self._last_activity = _time.monotonic()
+
         return await tool.execute(**arguments)
 
     async def _handle_plan_tool(self, arguments: dict[str, Any]) -> str:

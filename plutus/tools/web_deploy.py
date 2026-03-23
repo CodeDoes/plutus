@@ -160,6 +160,7 @@ async def _run_cmd(
     cwd: str | None = None,
     timeout: int = 300,
     use_wsl: bool = False,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run a shell command and return (returncode, stdout, stderr)."""
     if use_wsl and HAS_WSL:
@@ -168,11 +169,18 @@ async def _run_cmd(
     else:
         actual_cmd = cmd
 
+    # Build environment: inherit current env and merge overrides
+    import os as _os
+    merged_env = {**_os.environ}
+    if env:
+        merged_env.update(env)
+
     process = await asyncio.create_subprocess_shell(
         actual_cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=merged_env,
     )
     try:
         stdout, stderr = await asyncio.wait_for(
@@ -190,6 +198,106 @@ async def _run_cmd(
         except Exception:
             pass
         return -1, "", f"[TIMEOUT] Command timed out after {timeout}s"
+
+
+async def _run_cmd_streaming(
+    cmd: str,
+    cwd: str | None = None,
+    timeout: int = 300,
+    use_wsl: bool = False,
+    env: dict[str, str] | None = None,
+    progress_callback: Any | None = None,
+    progress_interval: float = 10.0,
+) -> tuple[int, str, str]:
+    """Run a shell command, streaming output line-by-line.
+
+    Calls ``progress_callback(lines_so_far)`` every ``progress_interval``
+    seconds so callers can emit heartbeat / progress events during long
+    operations (e.g. npm install).  Returns (returncode, stdout, stderr).
+    """
+    if use_wsl and HAS_WSL:
+        escaped = cmd.replace("'", "'\\''")
+        actual_cmd = f"wsl bash -c '{escaped}'"
+    else:
+        actual_cmd = cmd
+
+    import os as _os
+    merged_env = {**_os.environ}
+    if env:
+        merged_env.update(env)
+
+    process = await asyncio.create_subprocess_shell(
+        actual_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+        env=merged_env,
+    )
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    deadline = asyncio.get_event_loop().time() + timeout
+    last_progress = asyncio.get_event_loop().time()
+
+    async def _read_stream(stream: asyncio.StreamReader, bucket: list[str]) -> None:
+        while True:
+            try:
+                line = await asyncio.wait_for(stream.readline(), timeout=5.0)
+            except asyncio.TimeoutError:
+                if asyncio.get_event_loop().time() > deadline:
+                    break
+                continue
+            if not line:
+                break
+            bucket.append(line.decode("utf-8", errors="replace"))
+
+    # Run stdout/stderr readers concurrently with a progress ticker
+    async def _read_all() -> None:
+        nonlocal last_progress
+        await asyncio.gather(
+            _read_stream(process.stdout, stdout_lines),  # type: ignore[arg-type]
+            _read_stream(process.stderr, stderr_lines),  # type: ignore[arg-type]
+        )
+
+    try:
+        read_task = asyncio.create_task(_read_all())
+        while not read_task.done():
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                # Timeout — kill the process
+                try:
+                    process.kill()
+                    await process.wait()
+                except Exception:
+                    pass
+                read_task.cancel()
+                return -1, "".join(stdout_lines), f"[TIMEOUT] Command timed out after {timeout}s"
+
+            now = asyncio.get_event_loop().time()
+            if progress_callback and (now - last_progress) >= progress_interval:
+                last_progress = now
+                try:
+                    await progress_callback("".join(stdout_lines[-20:]))
+                except Exception:
+                    pass
+
+            await asyncio.sleep(min(1.0, remaining, progress_interval))
+
+        await read_task
+        await process.wait()
+    except asyncio.CancelledError:
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+        raise
+
+    return (
+        process.returncode or 0,
+        "".join(stdout_lines),
+        "".join(stderr_lines),
+    )
 
 
 def _extract_url(output: str, provider: str) -> str | None:
@@ -440,7 +548,34 @@ class WebDeployTool(Tool):
         cmd = cmd.format(name=project_name)
         lines = [f"🔨 Scaffolding {template['description']} project '{project_name}'...\n"]
 
-        rc, stdout, stderr = await _run_cmd(cmd, cwd=parent_dir, timeout=180)
+        # Non-interactive environment: CI=1 prevents npm/npx from prompting for
+        # user input ("Ok to proceed? (y)"), which would hang the process forever.
+        # npm_config_yes=true is a belt-and-suspenders fallback for older npm.
+        scaffold_env = {
+            "CI": "1",
+            "npm_config_yes": "true",
+            "FORCE_COLOR": "0",  # disable ANSI codes in captured output
+        }
+
+        progress_lines: list[str] = []
+
+        async def _on_progress(recent_output: str) -> None:
+            """Called every ~10 s during scaffold to log progress."""
+            if recent_output.strip():
+                progress_lines.append(recent_output.strip())
+            logger.info(
+                "[scaffold] still running '%s' — %d progress lines so far",
+                framework, len(progress_lines),
+            )
+
+        rc, stdout, stderr = await _run_cmd_streaming(
+            cmd,
+            cwd=parent_dir,
+            timeout=300,  # generous: next.js installs can take 3-4 min on slow machines
+            env=scaffold_env,
+            progress_callback=_on_progress,
+            progress_interval=10.0,
+        )
         if rc != 0:
             return (
                 f"[ERROR] Scaffold failed (exit {rc}):\n"
@@ -492,6 +627,13 @@ class WebDeployTool(Tool):
 
         lines = [f"🚀 Deploying **{name}** ({framework}) to {provider}...\n"]
 
+        # Non-interactive env for npm/build steps
+        deploy_env = {
+            "CI": "1",
+            "npm_config_yes": "true",
+            "FORCE_COLOR": "0",
+        }
+
         # Step 1: Install dependencies if package.json exists
         pkg_json = project_path / "package.json"
         if pkg_json.exists():
@@ -500,6 +642,7 @@ class WebDeployTool(Tool):
                 "npm install --legacy-peer-deps",
                 cwd=str(project_path),
                 timeout=180,
+                env=deploy_env,
             )
             if rc != 0:
                 lines.append(f"⚠️  npm install had warnings (continuing):\n{stderr[-500:]}")
@@ -511,6 +654,7 @@ class WebDeployTool(Tool):
                 build_cmd,
                 cwd=str(project_path),
                 timeout=300,
+                env=deploy_env,
             )
             if rc != 0:
                 return (
