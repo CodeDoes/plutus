@@ -90,6 +90,213 @@ _IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 # MIME type for PDF documents (Anthropic-specific support)
 _PDF_TYPE = "application/pdf"
 
+# File types whose content can be extracted as text and sent inline to the LLM.
+# Maps MIME type → human-readable label used in the text block header.
+_TEXT_EXTRACTABLE: dict[str, str] = {
+    # Plain text variants
+    "text/plain": "Text file",
+    "text/markdown": "Markdown document",
+    "text/csv": "CSV data",
+    "text/tsv": "TSV data",
+    "text/tab-separated-values": "TSV data",
+    "text/html": "HTML document",
+    "text/css": "CSS stylesheet",
+    "text/javascript": "JavaScript source",
+    "text/x-python": "Python source",
+    "text/x-script.python": "Python source",
+    "text/x-java-source": "Java source",
+    "text/x-c": "C source",
+    "text/x-c++": "C++ source",
+    "text/x-sh": "Shell script",
+    "text/x-shellscript": "Shell script",
+    "text/x-ruby": "Ruby source",
+    "text/x-go": "Go source",
+    "text/x-rust": "Rust source",
+    "text/x-kotlin": "Kotlin source",
+    "text/x-swift": "Swift source",
+    "text/x-php": "PHP source",
+    "text/x-sql": "SQL script",
+    "text/x-yaml": "YAML document",
+    "text/x-toml": "TOML document",
+    "text/x-ini": "INI config",
+    "text/x-log": "Log file",
+    "text/x-diff": "Diff/patch",
+    "text/x-patch": "Diff/patch",
+    # Application text formats
+    "application/json": "JSON data",
+    "application/xml": "XML document",
+    "application/x-yaml": "YAML document",
+    "application/x-sh": "Shell script",
+    "application/x-python-code": "Python source",
+    "application/x-httpd-php": "PHP source",
+    "application/javascript": "JavaScript source",
+    "application/typescript": "TypeScript source",
+    "application/toml": "TOML document",
+    "application/sql": "SQL script",
+    "application/graphql": "GraphQL schema",
+    "application/ld+json": "JSON-LD data",
+    "application/x-ndjson": "NDJSON data",
+    "application/x-www-form-urlencoded": "Form data",
+}
+
+# Office document MIME types — require library-based extraction
+_WORD_TYPES = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+    "application/msword",  # .doc (legacy — best-effort)
+}
+_EXCEL_TYPES = {
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
+    "application/vnd.ms-excel",  # .xls (legacy)
+    "application/vnd.oasis.opendocument.spreadsheet",  # .ods
+}
+_PPT_TYPES = {
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
+    "application/vnd.ms-powerpoint",  # .ppt (legacy)
+    "application/vnd.oasis.opendocument.presentation",  # .odp
+}
+_CSV_TYPES = {
+    "text/csv",
+    "text/tsv",
+    "text/tab-separated-values",
+    "application/csv",
+    "application/x-csv",
+}
+_ZIP_TYPES = {
+    "application/zip",
+    "application/x-zip-compressed",
+    "application/x-zip",
+    "application/octet-stream",  # generic binary — handled only if name ends .zip
+}
+_AUDIO_TYPES = {
+    "audio/mpeg", "audio/mp3", "audio/wav", "audio/wave", "audio/ogg",
+    "audio/flac", "audio/aac", "audio/webm", "audio/x-m4a", "audio/mp4",
+}
+_VIDEO_TYPES = {
+    "video/mp4", "video/mpeg", "video/webm", "video/ogg", "video/quicktime",
+    "video/x-msvideo", "video/x-matroska", "video/x-flv",
+}
+
+# Maximum characters of extracted text to include inline (prevents token bloat)
+_MAX_TEXT_CHARS = 40_000
+
+
+def _extract_docx(raw: bytes, name: str) -> str:
+    """Extract text from a .docx file using python-docx."""
+    try:
+        import io
+        import docx  # python-docx
+        doc = docx.Document(io.BytesIO(raw))
+        parts: list[str] = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                parts.append(para.text)
+        # Also extract tables
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                if row_text:
+                    parts.append(row_text)
+        text = "\n".join(parts)
+        return text[:_MAX_TEXT_CHARS] if text else f"[{name}: document appears to be empty]"
+    except ImportError:
+        return f"[{name}: python-docx not installed — cannot extract Word document text]"
+    except Exception as e:
+        return f"[{name}: failed to extract Word document — {e}]"
+
+
+def _extract_xlsx(raw: bytes, name: str) -> str:
+    """Extract data from an Excel file using openpyxl."""
+    try:
+        import io
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+        parts: list[str] = []
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            parts.append(f"=== Sheet: {sheet_name} ===")
+            row_count = 0
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c) if c is not None else "" for c in row]
+                if any(c.strip() for c in cells):
+                    parts.append(",".join(cells))
+                    row_count += 1
+                if row_count >= 500:  # cap at 500 rows per sheet
+                    parts.append("... [truncated — too many rows]")
+                    break
+        text = "\n".join(parts)
+        return text[:_MAX_TEXT_CHARS] if text else f"[{name}: spreadsheet appears to be empty]"
+    except ImportError:
+        return f"[{name}: openpyxl not installed — cannot extract Excel data]"
+    except Exception as e:
+        return f"[{name}: failed to extract Excel data — {e}]"
+
+
+def _extract_pptx(raw: bytes, name: str) -> str:
+    """Extract slide text from a .pptx file using python-pptx."""
+    try:
+        import io
+        import pptx  # python-pptx
+        prs = pptx.Presentation(io.BytesIO(raw))
+        parts: list[str] = []
+        for i, slide in enumerate(prs.slides, 1):
+            slide_texts: list[str] = []
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        t = para.text.strip()
+                        if t:
+                            slide_texts.append(t)
+            if slide_texts:
+                parts.append(f"--- Slide {i} ---")
+                parts.extend(slide_texts)
+        text = "\n".join(parts)
+        return text[:_MAX_TEXT_CHARS] if text else f"[{name}: presentation appears to have no text]"
+    except ImportError:
+        return f"[{name}: python-pptx not installed — cannot extract PowerPoint text]"
+    except Exception as e:
+        return f"[{name}: failed to extract PowerPoint text — {e}]"
+
+
+def _extract_zip_listing(raw: bytes, name: str) -> str:
+    """List contents of a ZIP archive and extract small text files."""
+    try:
+        import io
+        import zipfile
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+        entries = zf.infolist()
+        parts = [f"ZIP archive: {name} ({len(entries)} entries)"]
+        extracted_texts: list[str] = []
+        total_extracted = 0
+        for entry in entries[:200]:  # cap listing at 200 entries
+            size_kb = entry.file_size / 1024
+            parts.append(f"  {entry.filename} ({size_kb:.1f} KB)")
+            # Auto-extract small text files
+            if (
+                not entry.is_dir()
+                and entry.file_size < 50_000
+                and any(entry.filename.endswith(ext) for ext in (
+                    ".txt", ".md", ".py", ".js", ".ts", ".json", ".yaml",
+                    ".yml", ".toml", ".csv", ".xml", ".html", ".css",
+                    ".sh", ".bash", ".env", ".gitignore", ".dockerfile",
+                ))
+            ):
+                try:
+                    content = zf.read(entry.filename).decode("utf-8", errors="replace")
+                    extracted_texts.append(f"\n--- {entry.filename} ---\n{content[:2000]}")
+                    total_extracted += len(content)
+                    if total_extracted > 20_000:
+                        break
+                except Exception:
+                    pass
+        if len(entries) > 200:
+            parts.append(f"  ... and {len(entries) - 200} more entries")
+        if extracted_texts:
+            parts.append("\nExtracted text files:")
+            parts.extend(extracted_texts)
+        return "\n".join(parts)[:_MAX_TEXT_CHARS]
+    except Exception as e:
+        return f"[{name}: failed to read ZIP archive — {e}]"
+
 # OpenAI models that support native computer use via the Responses API
 _OPENAI_COMPUTER_USE_MODELS = {"gpt-5.4", "computer-use-preview"}
 
@@ -211,7 +418,13 @@ class LLMClient:
         Handles both Anthropic and OpenAI formats:
         - Images: Use OpenAI-style image_url blocks (LiteLLM translates for Anthropic)
         - PDFs (Anthropic only): Use document source blocks
+        - Word/Excel/PowerPoint: Extract text via python-docx / openpyxl / python-pptx
+        - CSV, JSON, plain text, code files: Decode UTF-8 and include inline
+        - ZIP archives: List contents and extract small text files
+        - Audio/Video: Include metadata note (cannot embed in LLM context)
         """
+        import base64 as _b64
+
         result = []
         for msg in messages:
             attachments = msg.pop("attachments", None)
@@ -228,45 +441,158 @@ class LLMClient:
                 content_blocks.append({"type": "text", "text": text})
 
             for att in attachments:
-                mime = att.get("type", "")
+                mime = att.get("type", "") or ""
                 data = att.get("data", "")  # base64-encoded
                 name = att.get("name", "file")
+                # Normalise MIME — browsers sometimes send empty string for
+                # unknown types; fall back to extension-based detection.
+                if not mime or mime == "application/octet-stream":
+                    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+                    mime = {
+                        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "doc":  "application/msword",
+                        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "xls":  "application/vnd.ms-excel",
+                        "ods":  "application/vnd.oasis.opendocument.spreadsheet",
+                        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        "ppt":  "application/vnd.ms-powerpoint",
+                        "odp":  "application/vnd.oasis.opendocument.presentation",
+                        "pdf":  "application/pdf",
+                        "zip":  "application/zip",
+                        "csv":  "text/csv",
+                        "tsv":  "text/tsv",
+                        "json": "application/json",
+                        "xml":  "application/xml",
+                        "yaml": "text/x-yaml",
+                        "yml":  "text/x-yaml",
+                        "toml": "application/toml",
+                        "md":   "text/markdown",
+                        "txt":  "text/plain",
+                        "py":   "text/x-python",
+                        "js":   "text/javascript",
+                        "ts":   "application/typescript",
+                        "jsx":  "text/javascript",
+                        "tsx":  "application/typescript",
+                        "html": "text/html",
+                        "css":  "text/css",
+                        "sh":   "text/x-sh",
+                        "bash": "text/x-sh",
+                        "sql":  "application/sql",
+                        "rs":   "text/x-rust",
+                        "go":   "text/x-go",
+                        "java": "text/x-java-source",
+                        "kt":   "text/x-kotlin",
+                        "swift":"text/x-swift",
+                        "rb":   "text/x-ruby",
+                        "php":  "text/x-php",
+                        "c":    "text/x-c",
+                        "cpp":  "text/x-c++",
+                        "h":    "text/x-c",
+                        "log":  "text/x-log",
+                        "diff": "text/x-diff",
+                        "patch":"text/x-patch",
+                        "mp3":  "audio/mpeg",
+                        "wav":  "audio/wav",
+                        "ogg":  "audio/ogg",
+                        "flac": "audio/flac",
+                        "aac":  "audio/aac",
+                        "m4a":  "audio/x-m4a",
+                        "mp4":  "video/mp4",
+                        "mov":  "video/quicktime",
+                        "avi":  "video/x-msvideo",
+                        "mkv":  "video/x-matroska",
+                        "webm": "video/webm",
+                    }.get(ext, "application/octet-stream")
 
+                # ── Images ──────────────────────────────────────────────────
                 if mime in _IMAGE_TYPES:
-                    # OpenAI-style image_url — LiteLLM translates for Anthropic
                     content_blocks.append({
                         "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{mime};base64,{data}",
-                        },
+                        "image_url": {"url": f"data:{mime};base64,{data}"},
                     })
+
+                # ── PDFs ────────────────────────────────────────────────────
                 elif mime == _PDF_TYPE and self.is_anthropic:
-                    # Anthropic document source block for PDFs
                     content_blocks.append({
                         "type": "document",
-                        "source": {
-                            "type": "base64",
-                            "media_type": _PDF_TYPE,
-                            "data": data,
-                        },
+                        "source": {"type": "base64", "media_type": _PDF_TYPE, "data": data},
                     })
                 elif mime == _PDF_TYPE:
-                    # Non-Anthropic providers don't natively support PDF
-                    # Include a text note so the user knows
-                    content_blocks.append({
-                        "type": "text",
-                        "text": (
-                            f"[Attached PDF: {name} — PDF preview is only "
-                            f"supported with Anthropic models. The file was "
-                            f"uploaded but cannot be processed by the current model.]"
-                        ),
-                    })
+                    content_blocks.append({"type": "text", "text": (
+                        f"[Attached PDF: {name} — PDF rendering is only supported with "
+                        f"Anthropic models. Switch to Claude to read this file.]"
+                    )})
+
+                # ── Word documents ───────────────────────────────────────────
+                elif mime in _WORD_TYPES:
+                    raw = _b64.b64decode(data)
+                    extracted = _extract_docx(raw, name)
+                    content_blocks.append({"type": "text", "text": (
+                        f"=== Word document: {name} ===\n{extracted}"
+                    )})
+
+                # ── Excel spreadsheets ──────────────────────────────────────
+                elif mime in _EXCEL_TYPES:
+                    raw = _b64.b64decode(data)
+                    extracted = _extract_xlsx(raw, name)
+                    content_blocks.append({"type": "text", "text": (
+                        f"=== Excel spreadsheet: {name} ===\n{extracted}"
+                    )})
+
+                # ── PowerPoint presentations ─────────────────────────────────
+                elif mime in _PPT_TYPES:
+                    raw = _b64.b64decode(data)
+                    extracted = _extract_pptx(raw, name)
+                    content_blocks.append({"type": "text", "text": (
+                        f"=== PowerPoint presentation: {name} ===\n{extracted}"
+                    )})
+
+                # ── ZIP archives ─────────────────────────────────────────────
+                elif mime in _ZIP_TYPES or name.lower().endswith(".zip"):
+                    raw = _b64.b64decode(data)
+                    extracted = _extract_zip_listing(raw, name)
+                    content_blocks.append({"type": "text", "text": extracted})
+
+                # ── Audio / Video — metadata note only ──────────────────────
+                elif mime in _AUDIO_TYPES:
+                    size_kb = len(data) * 3 // 4 // 1024  # approx decoded size
+                    content_blocks.append({"type": "text", "text": (
+                        f"[Attached audio file: {name} (~{size_kb} KB, {mime}). "
+                        f"The file was uploaded. To transcribe or analyse it, "
+                        f"save it to disk and use a speech-to-text tool.]"
+                    )})
+                elif mime in _VIDEO_TYPES:
+                    size_kb = len(data) * 3 // 4 // 1024
+                    content_blocks.append({"type": "text", "text": (
+                        f"[Attached video file: {name} (~{size_kb} KB, {mime}). "
+                        f"The file was uploaded. To process it, save it to disk "
+                        f"and use a video analysis tool.]"
+                    )})
+
+                # ── Plain text, code, CSV, JSON, XML, YAML, etc. ─────────────
+                elif mime in _TEXT_EXTRACTABLE or mime.startswith("text/"):
+                    try:
+                        raw = _b64.b64decode(data)
+                        text_content = raw.decode("utf-8", errors="replace")
+                        label = _TEXT_EXTRACTABLE.get(mime, "Text file")
+                        if len(text_content) > _MAX_TEXT_CHARS:
+                            text_content = text_content[:_MAX_TEXT_CHARS] + "\n... [truncated]"
+                        content_blocks.append({"type": "text", "text": (
+                            f"=== {label}: {name} ===\n{text_content}"
+                        )})
+                    except Exception as exc:
+                        content_blocks.append({"type": "text", "text": (
+                            f"[{name}: could not decode as text — {exc}]"
+                        )})
+
+                # ── Unknown / binary ─────────────────────────────────────────
                 else:
-                    # Unsupported file type — add a text note
-                    content_blocks.append({
-                        "type": "text",
-                        "text": f"[Attached file: {name} ({mime})]",
-                    })
+                    size_kb = len(data) * 3 // 4 // 1024
+                    content_blocks.append({"type": "text", "text": (
+                        f"[Attached file: {name} ({mime}, ~{size_kb} KB) — "
+                        f"binary format not directly readable. "
+                        f"Save it to disk to process it with an appropriate tool.]"
+                    )})
 
             # Replace content with multimodal blocks
             new_msg = {k: v for k, v in msg.items() if k != "content"}

@@ -1,27 +1,88 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { ArrowUp, Square, Paperclip, X, FileText, Image as ImageIcon } from "lucide-react";
+import {
+  ArrowUp, Square, Paperclip, X,
+  FileText, Image as ImageIcon, FileSpreadsheet,
+  Presentation, FileCode, FileArchive, Music, Video, File,
+} from "lucide-react";
 import { useAppStore } from "../../stores/appStore";
 import { CommandCenter } from "./CommandCenter";
-
 export interface Attachment {
   name: string;
   type: string;
   data: string;
   preview?: string;
 }
-
 interface Props {
   onSend: (content: string, attachments?: Attachment[]) => void;
   onStop?: () => void;
   disabled?: boolean;
 }
 
+// All MIME types accepted by the file picker.
+// The backend handles extraction for each category.
 const ACCEPTED_TYPES = [
-  "image/jpeg", "image/png", "image/gif", "image/webp",
+  // Images
+  "image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml",
+  "image/bmp", "image/tiff",
+  // Documents
   "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.oasis.opendocument.presentation",
+  // Text / code
+  "text/plain", "text/markdown", "text/csv", "text/html", "text/css",
+  "text/javascript", "text/x-python", "text/x-java-source",
+  "text/x-c", "text/x-c++", "text/x-sh", "text/x-ruby", "text/x-go",
+  "text/x-rust", "text/x-kotlin", "text/x-swift", "text/x-php",
+  "text/x-sql", "text/x-yaml", "text/x-log", "text/x-diff",
+  "application/json", "application/xml", "application/x-yaml",
+  "application/javascript", "application/typescript",
+  "application/toml", "application/sql", "application/graphql",
+  // Archives
+  "application/zip", "application/x-zip-compressed",
+  // Audio
+  "audio/mpeg", "audio/wav", "audio/ogg", "audio/flac",
+  "audio/aac", "audio/webm", "audio/x-m4a",
+  // Video
+  "video/mp4", "video/webm", "video/ogg", "video/quicktime",
+  "video/x-msvideo", "video/x-matroska",
+  // Wildcard extensions for types browsers may report as octet-stream
+  ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt",
+  ".csv", ".tsv", ".md", ".py", ".js", ".ts", ".jsx", ".tsx",
+  ".json", ".yaml", ".yml", ".toml", ".xml", ".html", ".css",
+  ".sh", ".bash", ".sql", ".rs", ".go", ".java", ".kt", ".swift",
+  ".rb", ".php", ".c", ".cpp", ".h", ".log", ".diff", ".patch",
+  ".zip", ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a",
+  ".mp4", ".mov", ".avi", ".mkv", ".webm",
 ].join(",");
 
-const MAX_FILE_SIZE = 20 * 1024 * 1024;
+// 50 MB for documents/archives; images stay at 20 MB
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
+
+/** Return a coloured icon component for a given MIME type. */
+function FileIcon({ mime, className }: { mime: string; className?: string }) {
+  if (mime.startsWith("image/"))                              return <ImageIcon className={className} />;
+  if (mime === "application/pdf")                            return <FileText className={`${className} text-red-400`} />;
+  if (mime.includes("word") || mime.includes("wordprocessing")) return <FileText className={`${className} text-blue-400`} />;
+  if (mime.includes("excel") || mime.includes("spreadsheet") || mime.includes("ms-excel")) return <FileSpreadsheet className={`${className} text-green-400`} />;
+  if (mime.includes("powerpoint") || mime.includes("presentation")) return <Presentation className={`${className} text-orange-400`} />;
+  if (mime.startsWith("audio/"))                             return <Music className={`${className} text-purple-400`} />;
+  if (mime.startsWith("video/"))                             return <Video className={`${className} text-pink-400`} />;
+  if (mime.includes("zip") || mime.includes("archive"))      return <FileArchive className={`${className} text-yellow-400`} />;
+  if (
+    mime.startsWith("text/") ||
+    mime.includes("json") || mime.includes("xml") ||
+    mime.includes("javascript") || mime.includes("typescript") ||
+    mime.includes("python") || mime.includes("sql") ||
+    mime.includes("yaml") || mime.includes("toml")
+  )                                                          return <FileCode className={`${className} text-cyan-400`} />;
+  return <File className={`${className} text-gray-400`} />;
+}
 
 export function ChatInput({ onSend, onStop, disabled }: Props) {
   const [input, setInput] = useState("");
@@ -168,11 +229,7 @@ export function ChatInput({ onSend, onStop, disabled }: Props) {
                     <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
                       style={{ background: "rgb(var(--gray-800) / 0.8)" }}
                     >
-                      {att.type === "application/pdf" ? (
-                        <FileText className="w-4 h-4 text-red-400" />
-                      ) : (
-                        <ImageIcon className="w-4 h-4 text-gray-400" />
-                      )}
+                      <FileIcon mime={att.type} className="w-4 h-4" />
                     </div>
                   )}
                   <span className="text-[11px] text-gray-400 truncate">{att.name}</span>
@@ -224,7 +281,7 @@ export function ChatInput({ onSend, onStop, disabled }: Props) {
                 onClick={() => fileInputRef.current?.click()}
                 disabled={disabled || isProcessing}
                 className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed hover:bg-gray-800/50"
-                title="Attach files (images, PDFs)"
+                title="Attach files — images, PDFs, Word, Excel, PowerPoint, CSV, code, ZIP, audio, video and more"
               >
                 <Paperclip className="w-4 h-4" />
               </button>
