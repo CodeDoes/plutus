@@ -53,6 +53,8 @@ export default function SkillsView() {
   const [importStatus, setImportStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const [exportingSkill, setExportingSkill] = useState<string | null>(null);
   const [exportedJson, setExportedJson] = useState<string | null>(null);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchSkills = useCallback(async () => {
@@ -106,6 +108,11 @@ export default function SkillsView() {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    readSkillFile(file);
+    e.target.value = "";
+  };
+
+  const readSkillFile = (file: File) => {
     const reader = new FileReader();
     reader.onload = (ev) => {
       const text = ev.target?.result as string;
@@ -113,18 +120,33 @@ export default function SkillsView() {
       handleImport(text);
     };
     reader.readAsText(file);
-    e.target.value = "";
+  };
+
+  // Drag-and-drop handlers
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+  const handleDragLeave = () => setIsDragOver(false);
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) readSkillFile(file);
   };
 
   // Export handler
   const handleExport = async (skillName: string) => {
     setExportingSkill(skillName);
     setExportedJson(null);
+    setExportLoading(true);
     try {
       const pkg = await api.exportSkill(skillName);
       setExportedJson(JSON.stringify(pkg, null, 2));
     } catch (e: any) {
       setExportedJson(`Error: ${e.message}`);
+    } finally {
+      setExportLoading(false);
     }
   };
 
@@ -476,16 +498,25 @@ export default function SkillsView() {
         {activeTab === "import" && (
           <div className="w-full space-y-6">
             {/* Upload File */}
-            <div className="w-full bg-surface border border-dashed border-violet-500/30 rounded-xl p-8 text-center">
-              <div className="text-4xl mb-3">📁</div>
+            <div
+              className={`w-full bg-surface border border-dashed rounded-xl p-8 text-center transition-colors ${
+                isDragOver
+                  ? "border-violet-400/60 bg-violet-500/10"
+                  : "border-violet-500/30"
+              }`}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
+              <div className="text-4xl mb-3">{isDragOver ? "📂" : "📁"}</div>
               <h3 className="text-gray-100/80 font-semibold mb-1">Upload a Skill File</h3>
               <p className="text-gray-500 text-sm mb-4">
-                Drop a <code className="text-violet-400/70">.json</code> skill file here or click to browse
+                Drop a <code className="text-violet-400/70">.plutus-skill</code> or <code className="text-violet-400/70">.json</code> file here, or click to browse
               </p>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".json"
+                accept=".plutus-skill,.json"
                 onChange={handleFileUpload}
                 className="hidden"
               />
@@ -728,9 +759,19 @@ export default function SkillsView() {
               </button>
             </div>
             <div className="p-6 overflow-y-auto max-h-[50vh]">
-              <pre className="text-xs font-mono text-gray-400 bg-surface-deep rounded-xl p-4 overflow-x-auto">
-                {exportedJson}
-              </pre>
+              {exportLoading ? (
+                <div className="flex items-center justify-center py-12 gap-3 text-gray-500">
+                  <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                  </svg>
+                  <span className="text-sm">Preparing export...</span>
+                </div>
+              ) : (
+                <pre className="text-xs font-mono text-gray-400 bg-surface-deep rounded-xl p-4 overflow-x-auto">
+                  {exportedJson}
+                </pre>
+              )}
             </div>
             <div className="p-6 border-t border-gray-800/60 flex gap-3">
               <button
@@ -745,13 +786,13 @@ export default function SkillsView() {
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement("a");
                   a.href = url;
-                  a.download = `${exportingSkill}.json`;
+                  a.download = `${exportingSkill}.plutus-skill`;
                   a.click();
                   URL.revokeObjectURL(url);
                 }}
                 className="flex-1 py-2.5 rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 transition-colors text-sm font-medium"
               >
-                💾 Download .json
+                💾 Download .plutus-skill
               </button>
             </div>
           </div>
