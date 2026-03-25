@@ -1340,8 +1340,8 @@ def create_router() -> APIRouter:
 
     @router.get("/skills/{skill_name}/export")
     async def export_skill(skill_name: str) -> dict[str, Any]:
-        """Export a skill as a shareable JSON package."""
-        from plutus.skills.creator import get_skill_creator
+        """Export a skill as a shareable JSON package, including any associated scripts."""
+        from plutus.skills.creator import get_skill_creator, SKILLS_DIR
         creator = get_skill_creator()
         source = creator.get_skill_source(skill_name)
         if not source:
@@ -1353,13 +1353,38 @@ def create_router() -> APIRouter:
                 raise HTTPException(status_code=404, detail=f"Skill not found: {skill_name}")
             source = skill.to_dict()
 
-        # Add export metadata
+        # Bundle any associated script files so the recipient gets a complete package.
+        # Python-type skills store their logic in a separate .py file referenced by
+        # the metadata's "script" key.  We embed the file content directly in the
+        # export so nothing is lost when sharing.
         import time
+        scripts: dict[str, str] = {}
+
+        # Primary script reference (e.g. "my_skill.py")
+        script_ref = source.get("script")
+        if script_ref:
+            script_path = SKILLS_DIR / script_ref
+            if script_path.exists():
+                try:
+                    scripts[script_ref] = script_path.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+
+        # Any extra files listed under an optional "files" key
+        for extra_ref in source.get("files", []):
+            extra_path = SKILLS_DIR / extra_ref
+            if extra_path.exists():
+                try:
+                    scripts[extra_ref] = extra_path.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+
         export_pkg = {
             "plutus_skill": True,
-            "export_version": 1,
+            "export_version": 2,
             "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "skill": source,
+            "scripts": scripts,  # {filename: content} — empty dict for step-based skills
         }
         return export_pkg
 
@@ -1369,19 +1394,46 @@ def create_router() -> APIRouter:
     @router.post("/skills/import")
     async def import_skill(req: SkillImportRequest) -> dict[str, Any]:
         """Import a skill from a JSON package (uploaded by user or from community)."""
-        from plutus.skills.creator import get_skill_creator
+        from pathlib import Path as _Path
+        import json as _json
+        from plutus.skills.creator import get_skill_creator, SKILLS_DIR
         from plutus.skills.registry import create_default_registry
 
         data = req.skill_data
 
-        # Handle both raw skill dicts and export packages
+        # Handle both raw skill dicts and export packages (v1 and v2)
         if data.get("plutus_skill") and "skill" in data:
             skill_dict = data["skill"]
+            bundled_scripts: dict[str, str] = data.get("scripts", {})
         else:
             skill_dict = data
+            bundled_scripts = {}
 
-        # Validate required fields
-        required = ["name", "description", "steps"]
+        # Restore any bundled script files BEFORE registering the skill so that
+        # Python-type skills can find their .py file immediately on first run.
+        if bundled_scripts:
+            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+            for filename, content in bundled_scripts.items():
+                # Safety: only allow simple filenames, no path traversal
+                safe_name = _Path(filename).name
+                dest = SKILLS_DIR / safe_name
+                try:
+                    dest.write_text(content, encoding="utf-8")
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to restore script '{safe_name}': {e}",
+                    )
+
+        is_python_skill = skill_dict.get("type") == "python"
+
+        if is_python_skill:
+            # For Python skills the script was already restored above;
+            # just write the metadata JSON directly.
+            required = ["name", "description"]
+        else:
+            required = ["name", "description", "steps"]
+
         missing = [f for f in required if not skill_dict.get(f)]
         if missing:
             raise HTTPException(
@@ -1399,7 +1451,15 @@ def create_router() -> APIRouter:
 
         creator = get_skill_creator()
         registry = create_default_registry()
-        success, msg, skill = creator.create_from_dict(skill_dict, registry=registry)
+
+        if is_python_skill:
+            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+            meta_path = SKILLS_DIR / f"{skill_dict['name']}.json"
+            meta_path.write_text(_json.dumps(skill_dict, indent=2))
+            msg = f"Imported Python skill '{skill_dict['name']}'"
+            success = True
+        else:
+            success, msg, _ = creator.create_from_dict(skill_dict, registry=registry)
 
         if not success:
             raise HTTPException(status_code=400, detail=msg)
@@ -1408,6 +1468,7 @@ def create_router() -> APIRouter:
             "success": True,
             "message": msg,
             "skill_name": skill_dict["name"],
+            "scripts_restored": list(bundled_scripts.keys()),
         }
 
     @router.delete("/skills/{skill_name}")
