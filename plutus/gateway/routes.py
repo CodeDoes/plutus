@@ -1247,6 +1247,47 @@ def create_router() -> APIRouter:
         creator = get_skill_creator()
         return {"skills": creator.list_saved_skills()}
 
+    # NOTE: /skills/{skill_name}/export MUST be registered BEFORE /skills/{skill_name}
+    # otherwise FastAPI matches "export" as the skill_name path parameter and this
+    # endpoint is never reached.
+    @router.get("/skills/{skill_name}/export")
+    async def export_skill(skill_name: str) -> dict[str, Any]:
+        """Export a skill as a shareable JSON package, including any associated scripts."""
+        from plutus.skills.creator import get_skill_creator, SKILLS_DIR
+        import time
+        creator = get_skill_creator()
+        source = creator.get_skill_source(skill_name)
+        if not source:
+            from plutus.skills.registry import create_default_registry
+            registry = create_default_registry()
+            skill_obj = registry.get(skill_name)
+            if not skill_obj:
+                raise HTTPException(status_code=404, detail=f"Skill not found: {skill_name}")
+            source = skill_obj.to_dict()
+        scripts: dict[str, str] = {}
+        script_ref = source.get("script")
+        if script_ref:
+            script_path = SKILLS_DIR / script_ref
+            if script_path.exists():
+                try:
+                    scripts[script_ref] = script_path.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+        for extra_ref in source.get("files", []):
+            extra_path = SKILLS_DIR / extra_ref
+            if extra_path.exists():
+                try:
+                    scripts[extra_ref] = extra_path.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+        return {
+            "plutus_skill": True,
+            "export_version": 2,
+            "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "skill": source,
+            "scripts": scripts,
+        }
+
     @router.get("/skills/{skill_name}")
     async def get_skill_detail(skill_name: str) -> dict[str, Any]:
         """Get details about a specific skill."""
@@ -1337,56 +1378,6 @@ def create_router() -> APIRouter:
             raise HTTPException(500, f"Failed to launch browser: {e}")
 
     # ── Skill Import / Export / Community ──────────────────────────
-
-    @router.get("/skills/{skill_name}/export")
-    async def export_skill(skill_name: str) -> dict[str, Any]:
-        """Export a skill as a shareable JSON package, including any associated scripts."""
-        from plutus.skills.creator import get_skill_creator, SKILLS_DIR
-        creator = get_skill_creator()
-        source = creator.get_skill_source(skill_name)
-        if not source:
-            # Try built-in skills
-            from plutus.skills.registry import create_default_registry
-            registry = create_default_registry()
-            skill = registry.get(skill_name)
-            if not skill:
-                raise HTTPException(status_code=404, detail=f"Skill not found: {skill_name}")
-            source = skill.to_dict()
-
-        # Bundle any associated script files so the recipient gets a complete package.
-        # Python-type skills store their logic in a separate .py file referenced by
-        # the metadata's "script" key.  We embed the file content directly in the
-        # export so nothing is lost when sharing.
-        import time
-        scripts: dict[str, str] = {}
-
-        # Primary script reference (e.g. "my_skill.py")
-        script_ref = source.get("script")
-        if script_ref:
-            script_path = SKILLS_DIR / script_ref
-            if script_path.exists():
-                try:
-                    scripts[script_ref] = script_path.read_text(encoding="utf-8")
-                except Exception:
-                    pass
-
-        # Any extra files listed under an optional "files" key
-        for extra_ref in source.get("files", []):
-            extra_path = SKILLS_DIR / extra_ref
-            if extra_path.exists():
-                try:
-                    scripts[extra_ref] = extra_path.read_text(encoding="utf-8")
-                except Exception:
-                    pass
-
-        export_pkg = {
-            "plutus_skill": True,
-            "export_version": 2,
-            "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "skill": source,
-            "scripts": scripts,  # {filename: content} — empty dict for step-based skills
-        }
-        return export_pkg
 
     class SkillImportRequest(BaseModel):
         skill_data: dict
