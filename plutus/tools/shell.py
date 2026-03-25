@@ -242,12 +242,13 @@ class ShellTool(Tool):
                     break
                 bucket.append(chunk)
 
-        read_task = asyncio.create_task(
-            asyncio.gather(
+        async def _read_both() -> None:
+            await asyncio.gather(
                 _read(process.stdout, stdout_chunks),   # type: ignore[arg-type]
                 _read(process.stderr, stderr_chunks),   # type: ignore[arg-type]
             )
-        )
+
+        read_task = asyncio.create_task(_read_both())
 
         while not read_task.done():
             remaining = deadline - asyncio.get_event_loop().time()
