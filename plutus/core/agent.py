@@ -1206,6 +1206,37 @@ class AgentRuntime:
         parts.append(f"\n## Current Tier: {tier}")
         parts.append(tier_descriptions.get(tier, ""))
 
+        # Inject live worker status so the coordinator always has accurate knowledge
+        # of background workers without needing to call a tool.
+        if self._tool_registry:
+            worker_tool = self._tool_registry.get("worker")
+            if worker_tool and hasattr(worker_tool, '_pool'):
+                try:
+                    all_workers = worker_tool._pool.list_all()
+                    if all_workers:
+                        lines = ["\n## Background Workers (live status)"]
+                        for w in all_workers:
+                            state = w.get('state', 'unknown')
+                            name = w.get('name', w.get('task_id', '?'))
+                            pct = w.get('progress_pct', 0)
+                            step = w.get('current_step', '')
+                            extra = ''
+                            if state == 'completed' and w.get('result'):
+                                r = w['result']
+                                extra = f" | Result: {r[:300]}{'...' if len(r) > 300 else ''}"
+                            elif state == 'failed':
+                                extra = f" | Error: {w.get('error', 'unknown')}"
+                            lines.append(
+                                f"  [{state.upper()}] {name} — {pct:.0f}% — {step}{extra}"
+                            )
+                        lines.append(
+                            "  NOTE: If a worker shows [COMPLETED] above, it is DONE. "
+                            "Do NOT say it is still running."
+                        )
+                        parts.append("\n".join(lines))
+                except Exception:
+                    pass
+
         # Add a final reminder — this is the LAST thing the LLM sees in the system prompt,
         # which means it gets high attention weight in transformer models
         parts.append("\n## REMINDER")

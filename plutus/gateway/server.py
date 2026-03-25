@@ -586,13 +586,40 @@ async def _worker_executor(task: WorkerTask, on_status: Any, *, deadline: float 
                     f"{result_for_context}{truncation_note}\n"
                     f"[You may reference this worker's output when responding to the user.]"
                 )
-                if not hasattr(agent, '_pending_worker_results'):
-                    agent._pending_worker_results = []
-                agent._pending_worker_results.append(worker_context_msg)
-                # Cap pending results to prevent unbounded memory growth
-                if len(agent._pending_worker_results) > 100:
-                    agent._pending_worker_results = agent._pending_worker_results[-50:]
-                logger.info(f"Worker {task.id} result queued for coordinator (queue size: {len(agent._pending_worker_results)})")
+                if not getattr(agent, '_processing', False):
+                    # Agent is idle — inject directly into the conversation so
+                    # the coordinator sees the result immediately on the next
+                    # user message, without waiting for a process_message drain.
+                    try:
+                        await agent._conversation.add_user_message(
+                            f"[SYSTEM NOTIFICATION]\n{worker_context_msg}"
+                        )
+                        logger.info(
+                            f"Worker {task.id} result injected directly into conversation "
+                            f"(agent was idle)"
+                        )
+                    except Exception as inject_err:
+                        # Fall back to queue if direct injection fails
+                        logger.warning(
+                            f"Worker {task.id} direct injection failed ({inject_err}), "
+                            f"falling back to queue"
+                        )
+                        if not hasattr(agent, '_pending_worker_results'):
+                            agent._pending_worker_results = []
+                        agent._pending_worker_results.append(worker_context_msg)
+                else:
+                    # Agent is mid-loop — queue to avoid breaking Anthropic's
+                    # strict tool_use → tool_result pairing constraint.
+                    if not hasattr(agent, '_pending_worker_results'):
+                        agent._pending_worker_results = []
+                    agent._pending_worker_results.append(worker_context_msg)
+                    # Cap pending results to prevent unbounded memory growth
+                    if len(agent._pending_worker_results) > 100:
+                        agent._pending_worker_results = agent._pending_worker_results[-50:]
+                    logger.info(
+                        f"Worker {task.id} result queued for coordinator "
+                        f"(agent busy, queue size: {len(agent._pending_worker_results)})"
+                    )
             else:
                 logger.warning(f"Worker {task.id} could not queue result — no agent in state")
         except Exception as broadcast_err:
