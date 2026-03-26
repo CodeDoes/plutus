@@ -664,8 +664,8 @@ function SchedulerTab() {
 
   const jobs = data?.jobs || [];
   const stats = data?.stats || {};
-  const activeJobs = jobs.filter((j: any) => j.status === "active");
-  const pausedJobs = jobs.filter((j: any) => j.status === "paused");
+  const activeJobs = jobs.filter((j: any) => (j.status || j.state) === "active");
+  const pausedJobs = jobs.filter((j: any) => (j.status || j.state) === "paused");
 
   return (
     <div className="space-y-6">
@@ -742,8 +742,11 @@ function JobCard({ job, onPause, onResume, onDelete }: {
 }) {
   const [expanded, setExpanded] = useState(false);
   const id = job.id || job.job_id;
-  const isPaused = job.status === "paused";
-  const isActive = job.status === "active";
+  const status = job.status || job.state || "active";
+  const isPaused = status === "paused";
+  const isActive = status === "active";
+  const isCompleted = status === "completed";
+  const jobType = job.job_type || "cron";
 
   return (
     <div className={`bg-surface-alt border rounded-xl p-4 transition-colors ${
@@ -756,14 +759,37 @@ function JobCard({ job, onPause, onResume, onDelete }: {
             <span className="text-sm font-medium text-gray-200 truncate">
               {job.name || job.task || id}
             </span>
-            <StatusBadge status={job.status} />
+            <StatusBadge status={status} />
+            {jobType === "once" && (
+              <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/20">
+                One-time
+              </span>
+            )}
+            {jobType === "interval" && (
+              <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-purple-500/15 text-purple-400 border border-purple-500/20">
+                Interval
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-3 mt-1 text-[11px] text-gray-500">
             {job.schedule && <span className="font-mono bg-gray-800/50 px-1.5 py-0.5 rounded">{job.schedule}</span>}
             {job.cron && <span className="font-mono bg-gray-800/50 px-1.5 py-0.5 rounded">{job.cron}</span>}
             {job.interval && <span>Every {formatDuration(job.interval)}</span>}
-            {job.next_run && <span>Next: {formatDate(job.next_run)}</span>}
-            {job.last_run && <span>Last: {formatDate(job.last_run)}</span>}
+            {job.interval_seconds > 0 && !job.interval && <span>Every {formatDuration(job.interval_seconds)}</span>}
+            {jobType === "once" && job.run_at && (
+              <span className="flex items-center gap-1">
+                <Calendar className="w-3 h-3" />
+                Scheduled: {job.run_at}
+              </span>
+            )}
+            {job.next_run_human && job.next_run_human !== "Not scheduled" && (
+              <span>Next: {job.next_run_human}</span>
+            )}
+            {!job.next_run_human && job.next_run > 0 && <span>Next: {formatDate(job.next_run)}</span>}
+            {job.last_run_human && job.last_run_human !== "Never" && (
+              <span>Last: {job.last_run_human}</span>
+            )}
+            {!job.last_run_human && job.last_run > 0 && <span>Last: {formatDate(job.last_run)}</span>}
             {job.run_count !== undefined && <span>Runs: {job.run_count}</span>}
           </div>
         </div>
@@ -796,9 +822,13 @@ function JobCard({ job, onPause, onResume, onDelete }: {
       </div>
       {expanded && (
         <div className="mt-3 pt-3 border-t border-gray-800/60 text-xs text-gray-400 space-y-1.5">
+          {job.prompt && <p><span className="text-gray-600">Prompt:</span> {job.prompt}</p>}
           {job.task && <p><span className="text-gray-600">Task:</span> {job.task}</p>}
           {job.description && <p><span className="text-gray-600">Description:</span> {job.description}</p>}
+          <p><span className="text-gray-600">Type:</span> {jobType}{jobType === "once" && job.run_at ? ` — ${job.run_at}` : ""}</p>
+          {job.model_key && <p><span className="text-gray-600">Model:</span> {job.model_key}</p>}
           {job.model && <p><span className="text-gray-600">Model:</span> {job.model}</p>}
+          {job.max_runs > 0 && <p><span className="text-gray-600">Max runs:</span> {job.max_runs}</p>}
           {job.created_at && <p><span className="text-gray-600">Created:</span> {formatDate(job.created_at)}</p>}
         </div>
       )}

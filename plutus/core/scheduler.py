@@ -59,6 +59,7 @@ class ScheduledJob:
     job_type: JobType = JobType.CRON
     schedule: str = ""                    # Cron expression or interval string
     interval_seconds: int = 0             # For interval type
+    run_at: str = ""                      # ISO datetime for 'once' type (e.g. '2026-04-15 09:00')
     prompt: str = ""                      # What to tell the agent when the job fires
     model_key: str | None = None          # Model to use (None = auto-route)
     spawn_worker: bool = True             # Spawn as worker (True) or main agent (False)
@@ -78,6 +79,7 @@ class ScheduledJob:
             "job_type": self.job_type.value,
             "schedule": self.schedule,
             "interval_seconds": self.interval_seconds,
+            "run_at": self.run_at,
             "prompt": self.prompt[:300] + ("..." if len(self.prompt) > 300 else ""),
             "model_key": self.model_key,
             "spawn_worker": self.spawn_worker,
@@ -267,7 +269,7 @@ class Scheduler:
             if hasattr(job, key):
                 setattr(job, key, value)
         # Recalculate next run if schedule changed
-        if "schedule" in updates or "interval_seconds" in updates:
+        if "schedule" in updates or "interval_seconds" in updates or "run_at" in updates:
             job.next_run = self._calc_next_run(job)
         self._save()
         return job
@@ -508,10 +510,81 @@ class Scheduler:
             return time.time() + job.interval_seconds
 
         elif job.job_type == JobType.ONCE:
-            # For one-shot jobs, next_run should be set explicitly
+            # Parse run_at datetime string if provided
+            if job.run_at:
+                ts = _parse_datetime(job.run_at)
+                if ts:
+                    return ts
+            # Fall back to existing next_run (e.g. set via delay_seconds)
             return job.next_run or 0
 
         return 0
+
+
+def _parse_datetime(s: str) -> float | None:
+    """Parse a datetime string into a Unix timestamp.
+
+    Accepts multiple common formats:
+      - ISO 8601: '2026-04-15T09:00:00', '2026-04-15T09:00'
+      - Date + time: '2026-04-15 09:00:00', '2026-04-15 09:00'
+      - Date only (runs at midnight): '2026-04-15'
+      - US-style: '04/15/2026 09:00', 'April 15, 2026 9:00 AM'
+      - Relative: 'tomorrow 9:00', 'in 2 hours' (basic support)
+    """
+    if not s or not s.strip():
+        return None
+    s = s.strip()
+
+    # ── Relative shortcuts ────────────────────────────────────
+    import re
+    low = s.lower()
+
+    # "in X hours/minutes/seconds/days"
+    m = re.match(r"in\s+(\d+)\s+(second|minute|hour|day)s?", low)
+    if m:
+        amount, unit = int(m.group(1)), m.group(2)
+        mult = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}[unit]
+        return time.time() + amount * mult
+
+    # "tomorrow HH:MM"
+    m = re.match(r"tomorrow(?:\s+(\d{1,2})[:.](\d{2}))?", low)
+    if m:
+        tomorrow = datetime.now() + timedelta(days=1)
+        h = int(m.group(1)) if m.group(1) else 0
+        mi = int(m.group(2)) if m.group(2) else 0
+        target = tomorrow.replace(hour=h, minute=mi, second=0, microsecond=0)
+        return target.timestamp()
+
+    # ── Absolute datetime formats ─────────────────────────────
+    formats = [
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M",
+        "%m/%d/%Y",
+        "%B %d, %Y %I:%M %p",
+        "%B %d, %Y %H:%M",
+        "%B %d, %Y",
+        "%b %d, %Y %I:%M %p",
+        "%b %d, %Y %H:%M",
+        "%b %d, %Y",
+        "%d %B %Y %H:%M",
+        "%d %B %Y",
+        "%d %b %Y %H:%M",
+        "%d %b %Y",
+    ]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt.timestamp()
+        except ValueError:
+            continue
+
+    logger.warning(f"Could not parse datetime string: '{s}'")
+    return None
 
 
 def _format_timestamp(ts: float) -> str:

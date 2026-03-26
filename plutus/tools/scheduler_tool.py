@@ -40,7 +40,7 @@ class SchedulerTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Create and manage scheduled tasks. Supports cron expressions, intervals, and one-shot timers.\n\n"
+            "Create and manage scheduled tasks. Supports cron expressions, intervals, and one-shot scheduling.\n\n"
             "Operations:\n"
             "- create: Create a new scheduled job\n"
             "- list: List all scheduled jobs\n"
@@ -54,7 +54,9 @@ class SchedulerTool(Tool):
             "- cron: Standard 5-field cron expression (min hour dom month dow)\n"
             "  Examples: '0 6 * * *' (daily 6AM), '*/5 * * * *' (every 5 min), '0 9 * * 1-5' (weekdays 9AM)\n"
             "- interval: Run every N seconds (e.g., 300 for every 5 minutes)\n"
-            "- once: Run once at a specific time\n\n"
+            "- once: Run once at a specific date/time. Use 'run_at' for an absolute datetime,\n"
+            "  or 'delay_seconds' to run after a delay.\n"
+            "  run_at examples: '2026-04-15 09:00', '2026-12-25T14:30', 'tomorrow 8:00', 'in 2 hours'\n\n"
             "Each job can spawn a worker (default) or run on the main agent. "
             "Set model_key to choose which model handles the job."
         )
@@ -89,6 +91,18 @@ class SchedulerTool(Tool):
                 "interval_seconds": {
                     "type": "integer",
                     "description": "Interval in seconds for 'interval' type (e.g., 300 for every 5 minutes).",
+                },
+                "run_at": {
+                    "type": "string",
+                    "description": (
+                        "Date/time to run a 'once' job. Accepts ISO 8601 (e.g., '2026-04-15T09:00'), "
+                        "date + time (e.g., '2026-04-15 09:00'), date only (midnight), "
+                        "or relative expressions like 'tomorrow 8:00' or 'in 2 hours'."
+                    ),
+                },
+                "delay_seconds": {
+                    "type": "integer",
+                    "description": "Delay in seconds before running a 'once' job (alternative to run_at).",
                 },
                 "prompt": {
                     "type": "string",
@@ -163,11 +177,18 @@ class SchedulerTool(Tool):
 
         schedule = kwargs.get("schedule", "")
         interval_seconds = kwargs.get("interval_seconds", 0)
+        run_at = kwargs.get("run_at", "")
+        delay_seconds = kwargs.get("delay_seconds", 0)
 
         if job_type == JobType.CRON and not schedule:
             return "[ERROR] 'schedule' (cron expression) is required for cron jobs."
         if job_type == JobType.INTERVAL and not interval_seconds:
             return "[ERROR] 'interval_seconds' is required for interval jobs."
+        if job_type == JobType.ONCE and not run_at and not delay_seconds:
+            return (
+                "[ERROR] For 'once' jobs, provide either 'run_at' (e.g., '2026-04-15 09:00', "
+                "'tomorrow 8:00', 'in 2 hours') or 'delay_seconds'."
+            )
 
         job = ScheduledJob(
             name=kwargs.get("name", "Unnamed Job"),
@@ -175,11 +196,16 @@ class SchedulerTool(Tool):
             job_type=job_type,
             schedule=schedule,
             interval_seconds=interval_seconds,
+            run_at=run_at,
             prompt=prompt,
             model_key=kwargs.get("model_key"),
             spawn_worker=kwargs.get("spawn_worker", True),
-            max_runs=kwargs.get("max_runs", 0),
+            max_runs=kwargs.get("max_runs", 1 if job_type == JobType.ONCE else 0),
         )
+
+        # For delay_seconds, compute next_run directly
+        if job_type == JobType.ONCE and delay_seconds and not run_at:
+            job.next_run = time.time() + delay_seconds
 
         created = self._scheduler.add_job(job)
         return json.dumps({
