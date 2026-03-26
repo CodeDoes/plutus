@@ -113,6 +113,9 @@ class CustomConnectorCreate(BaseModel):
     default_headers: dict[str, str] = {}
 
 
+class SkillImportRequest(BaseModel):
+    skill_data: dict
+
 
 def create_router() -> APIRouter:
     router = APIRouter()
@@ -1378,9 +1381,6 @@ def create_router() -> APIRouter:
             raise HTTPException(500, f"Failed to launch browser: {e}")
 
     # ── Skill Import / Export / Community ──────────────────────────
-
-    class SkillImportRequest(BaseModel):
-        skill_data: dict
 
     @router.post("/skills/import")
     async def import_skill(req: SkillImportRequest) -> dict[str, Any]:
