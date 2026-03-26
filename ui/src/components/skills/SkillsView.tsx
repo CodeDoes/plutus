@@ -98,7 +98,9 @@ export default function SkillsView() {
       const res = await api.importSkill(data);
       setImportStatus({ type: "success", msg: res.message || `Imported skill: ${res.skill_name}` });
       setImportText("");
-      fetchSkills();
+      await fetchSkills();
+      // Switch to My Skills tab so the user can see the imported skill
+      setActiveTab("my-skills");
     } catch (e: any) {
       setImportStatus({ type: "error", msg: e.message || "Invalid JSON or import failed" });
     }

@@ -515,8 +515,12 @@ class SkillCreator:
                     "category": data.get("category", "custom"),
                     "version": data.get("version", 1),
                     "triggers": data.get("triggers", []),
+                    "required_params": data.get("required_params", []),
+                    "optional_params": data.get("optional_params", []),
                     "steps_count": len(data.get("steps", [])),
                     "reason": data.get("reason", ""),
+                    "type": data.get("type", "simple"),
+                    "dynamic": True,
                     "file": str(path),
                 })
             except Exception:

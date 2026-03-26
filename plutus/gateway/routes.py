@@ -1235,9 +1235,13 @@ def create_router() -> APIRouter:
 
     @router.get("/skills")
     async def list_skills(category: str | None = None) -> dict[str, Any]:
-        """List all available skills."""
+        """List all available skills (built-in + user-created/imported)."""
         from plutus.skills.registry import create_default_registry
+        from plutus.skills.creator import get_skill_creator
         registry = create_default_registry()
+        # Also load user-created / imported skills so they appear in the All tab
+        creator = get_skill_creator()
+        creator.load_into_registry(registry)
         if category:
             skills = registry.find_by_category(category)
             return {"skills": [s.to_dict() for s in skills], "category": category}
