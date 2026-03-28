@@ -542,7 +542,7 @@ async def _worker_executor(task: WorkerTask, on_status: Any, *, deadline: float 
                 "worker": {
                     "task_id": task.id,
                     "name": task.name,
-                    "result": result[:500],
+                    "result": result[:4000],
                     "state": "timed_out" if timed_out else ("failed" if result.startswith("[Worker Error]") else "completed"),
                 },
             })
@@ -604,14 +604,10 @@ async def _worker_executor(task: WorkerTask, on_status: Any, *, deadline: float 
                             f"Worker {task.id} direct injection failed ({inject_err}), "
                             f"falling back to queue"
                         )
-                        if not hasattr(agent, '_pending_worker_results'):
-                            agent._pending_worker_results = []
                         agent._pending_worker_results.append(worker_context_msg)
                 else:
                     # Agent is mid-loop — queue to avoid breaking Anthropic's
                     # strict tool_use → tool_result pairing constraint.
-                    if not hasattr(agent, '_pending_worker_results'):
-                        agent._pending_worker_results = []
                     agent._pending_worker_results.append(worker_context_msg)
                     # Cap pending results to prevent unbounded memory growth
                     if len(agent._pending_worker_results) > 100:

@@ -94,7 +94,7 @@ class WorkerStatus:
             "current_step": self.current_step,
             "steps_completed": self.steps_completed,
             "progress_pct": round(self.progress_pct, 1),
-            "result": self.result[:500] if self.result and len(self.result) > 500 else self.result,
+            "result": self.result[:4000] if self.result and len(self.result) > 4000 else self.result,
             "error": self.error,
             "started_at": self.started_at,
             "completed_at": self.completed_at,

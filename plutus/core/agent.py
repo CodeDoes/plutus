@@ -978,6 +978,10 @@ class AgentRuntime:
         # Processing flag — True while process_message() is actively running
         self._processing = False
 
+        # Queue for worker results that arrive while the agent is busy.
+        # Workers append here; the agent drains at the start of process_message().
+        self._pending_worker_results: list[str] = []
+
         # Stall detection — timestamp of the last event emitted during processing
         import time as _time
         self._last_activity: float = _time.monotonic()
@@ -1223,7 +1227,7 @@ class AgentRuntime:
                             extra = ''
                             if state == 'completed' and w.get('result'):
                                 r = w['result']
-                                extra = f" | Result: {r[:300]}{'...' if len(r) > 300 else ''}"
+                                extra = f" | Result: {r[:2000]}{'...' if len(r) > 2000 else ''}"
                             elif state == 'failed':
                                 extra = f" | Error: {w.get('error', 'unknown')}"
                             lines.append(
@@ -1349,6 +1353,18 @@ class AgentRuntime:
                 )
                 await self._conversation.start_conversation(title=user_message[:50])
 
+        # Drain any pending worker results into the conversation BEFORE
+        # adding the user message.  This ensures the LLM sees worker results
+        # chronologically before the user's question about them — otherwise
+        # the coordinator thinks the results haven't arrived yet.
+        if self._pending_worker_results:
+            for wr_msg in self._pending_worker_results:
+                await self._conversation.add_user_message(
+                    f"[SYSTEM NOTIFICATION]\n{wr_msg}"
+                )
+            logger.info(f"Drained {len(self._pending_worker_results)} pending worker results into conversation")
+            self._pending_worker_results.clear()
+
         await self._conversation.add_user_message(user_message)
 
         # Store attachments for the current message (transient, not persisted)
@@ -1391,17 +1407,6 @@ class AgentRuntime:
                 except Exception as _reminder_err:
                     logger.warning("Could not inject resume reminder: %s", _reminder_err)
 
-        # Drain any pending worker results into the conversation.
-        # These are queued by background workers to avoid injecting
-        # messages mid-tool-loop (which breaks Anthropic's tool_use/tool_result pairing).
-        if hasattr(self, '_pending_worker_results') and self._pending_worker_results:
-            for wr_msg in self._pending_worker_results:
-                await self._conversation.add_user_message(
-                    f"[SYSTEM NOTIFICATION]\n{wr_msg}"
-                )
-            logger.info(f"Drained {len(self._pending_worker_results)} pending worker results into conversation")
-            self._pending_worker_results.clear()
-
         self._cancelled = False
         self._processing = True
         import time as _time
@@ -1423,7 +1428,7 @@ class AgentRuntime:
             # Drain any worker results that arrived mid-loop.
             # Workers may complete while the agent is already processing, so we
             # check at the start of every round — not just at process_message entry.
-            if hasattr(self, '_pending_worker_results') and self._pending_worker_results:
+            if self._pending_worker_results:
                 for wr_msg in self._pending_worker_results:
                     await self._conversation.add_user_message(
                         f"[SYSTEM NOTIFICATION]\n{wr_msg}"
