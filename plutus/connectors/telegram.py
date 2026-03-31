@@ -327,12 +327,11 @@ class TelegramConnector(BaseConnector):
         caption: str = "",
         chat_id: str | int | None = None,
     ) -> dict[str, Any]:
-        """Send a voice message via Telegram (displayed as a playable voice note).
+        """Send a voice message via Telegram.
 
-        Telegram requires OGG/Opus format for voice notes.  If the file is
-        already .ogg it is sent directly; otherwise we attempt an ffmpeg
-        conversion first so the message appears as a playable voice bubble
-        rather than a generic audio file attachment.
+        Telegram's ``sendVoice`` endpoint accepts both OGG/Opus and MP3
+        files.  We send the file as-is to preserve audio quality — no
+        lossy re-encoding step.
         """
         import os
         target = chat_id or self._chat_id
@@ -340,30 +339,9 @@ class TelegramConnector(BaseConnector):
             return {"success": False, "message": "No chat_id configured"}
 
         try:
-            # Ensure OGG/Opus format for proper voice note display
             send_path = file_path
-            if not file_path.lower().endswith(".ogg"):
-                ogg_path = file_path.rsplit(".", 1)[0] + ".ogg"
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        "ffmpeg", "-i", file_path, "-c:a", "libopus",
-                        "-b:a", "32k", "-vn", ogg_path,
-                        "-y", "-loglevel", "error",
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    _, stderr = await proc.communicate()
-                    if proc.returncode == 0:
-                        send_path = ogg_path
-                    else:
-                        logger.warning(
-                            f"ffmpeg ogg conversion failed, sending original: "
-                            f"{stderr.decode()[:200]}"
-                        )
-                except FileNotFoundError:
-                    logger.warning("ffmpeg not found, sending original file")
 
-            # Determine content type based on actual file being sent
+            # Determine content type based on file extension
             if send_path.lower().endswith(".ogg"):
                 content_type = "audio/ogg"
                 filename = "voice.ogg"

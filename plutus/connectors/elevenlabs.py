@@ -477,50 +477,27 @@ class ElevenLabsConnector(AIProviderConnector):
     async def synthesize_for_telegram(
         self, text: str, voice_id: str | None = None
     ) -> dict[str, Any]:
-        """Generate audio optimized for Telegram voice messages (.ogg opus)."""
-        result = await self.synthesize(
+        """Generate high-quality audio for Telegram voice messages.
+
+        Telegram's sendVoice endpoint accepts MP3 directly, so we request
+        the highest quality MP3 from ElevenLabs (44.1 kHz / 128 kbps) and
+        skip the lossy OGG re-encode.  This matches the cloud version's
+        behaviour and produces noticeably better voice quality.
+        """
+        return await self.synthesize(
             text=text,
             voice_id=voice_id,
-            output_format="mp3_22050_32",
+            output_format="mp3_44100_128",
         )
-
-        if not result["success"]:
-            return result
-
-        # Convert mp3 to ogg/opus for Telegram
-        mp3_path = result["audio_path"]
-        ogg_path = mp3_path.replace(".mp3", ".ogg")
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-i", mp3_path, "-c:a", "libopus",
-                "-b:a", "32k", "-vn", str(ogg_path),
-                "-y", "-loglevel", "error",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-
-            if proc.returncode == 0:
-                Path(mp3_path).unlink(missing_ok=True)
-                result["audio_path"] = ogg_path
-                return result
-            else:
-                logger.warning(f"ogg conversion failed, using mp3: {stderr.decode()}")
-                return result
-
-        except FileNotFoundError:
-            logger.warning("ffmpeg not found, sending mp3 instead of ogg")
-            return result
 
     async def synthesize_for_whatsapp(
         self, text: str, voice_id: str | None = None
     ) -> dict[str, Any]:
-        """Generate audio optimized for WhatsApp voice messages."""
+        """Generate high-quality audio for WhatsApp voice messages."""
         return await self.synthesize(
             text=text,
             voice_id=voice_id,
-            output_format="mp3_22050_32",
+            output_format="mp3_44100_128",
         )
 
     async def send_message(self, text: str, **kwargs: Any) -> dict[str, Any]:
