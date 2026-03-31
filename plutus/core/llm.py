@@ -347,41 +347,53 @@ class LLMClient:
         return model
 
     def _ensure_api_key(self) -> bool:
-        """Resolve the API key from env var or secrets store.
+        """Resolve the API key and set the correct env var for the current provider.
 
         Returns True if a key is available, False otherwise.
         Does NOT crash — the server can start without a key and prompt the user.
+
+        Key resolution order:
+        1. Secrets file (most reliable, never polluted)
+        2. os.environ (may be set by user or inject_all at startup)
         """
         from plutus.config import PROVIDER_ENV_VARS
 
         if self._config.provider in ("ollama", "local"):
             return True
 
-        # Derive the correct env-var name from the provider, never trust the
-        # potentially stale api_key_env that may linger from a previous provider.
-        env_var = PROVIDER_ENV_VARS.get(
-            self._config.provider,
-            f"{self._config.provider.upper()}_API_KEY",
-        )
+        provider = self._config.provider
+        env_var = PROVIDER_ENV_VARS.get(provider, f"{provider.upper()}_API_KEY")
 
-        # Try secrets store (checks env var first, then file)
-        key = self._secrets.get_key(self._config.provider)
-        if key:
-            os.environ[env_var] = key
+        # 1. Read directly from secrets file first (bypasses os.environ which
+        #    may be polluted by a previous provider switch).
+        file_key = self._secrets._read().get(provider)
+        if file_key:
+            os.environ[env_var] = file_key
+            return True
+
+        # 2. Fall back to os.environ (user may have set it externally).
+        env_key = os.environ.get(env_var)
+        if env_key:
             return True
 
         logger.warning(
-            f"No API key found for {self._config.provider}. "
+            f"No API key found for {provider}. "
             f"Set {env_var} or use the web UI to configure."
         )
         return False
 
     def reload_model(self, config: ModelConfig) -> None:
         """Hot-reload model configuration (called after user changes model via UI)."""
+        old_provider = self._config.provider
+        old_model = self._model
         self._config = config
         self._model = self._resolve_model()
         self._key_available = self._ensure_api_key()
-        logger.info(f"Model reloaded: {self._model} (provider={config.provider})")
+        logger.info(
+            f"Model reloaded: {old_model} -> {self._model} "
+            f"(provider: {old_provider} -> {config.provider}, "
+            f"key_available={self._key_available})"
+        )
 
     def reload_key(self) -> bool:
         """Re-check for API key availability (called after user sets a key via UI)."""
@@ -410,6 +422,15 @@ class LLMClient:
             return False
         return self._config.model.lower() in _OPENAI_COMPUTER_USE_MODELS
 
+    # Known API key prefixes per provider — used to detect cross-contamination.
+    # Order matters: more-specific prefixes (sk-ant-) must be checked before
+    # less-specific ones (sk-) to avoid false positives.
+    _KEY_OWNER: list[tuple[str, str]] = [
+        ("sk-ant-", "anthropic"),   # Anthropic (must come before generic sk-)
+        ("sk-", "openai"),          # OpenAI
+        ("AI", "gemini"),           # Google Gemini
+    ]
+
     def _build_kwargs(self, **overrides: Any) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "model": self._model,
@@ -420,13 +441,65 @@ class LLMClient:
             kwargs["api_base"] = self._config.base_url
         # Explicitly pass the API key to litellm so it never falls back to a
         # stale or wrong key that may be sitting in os.environ from a previous
-        # provider.  Only inject for providers that need a key.
+        # provider.  Read from secrets file first (most reliable), then env var.
         if self._config.provider not in ("ollama", "local"):
-            api_key = self._secrets.get_key(self._config.provider)
+            provider = self._config.provider
+            # Prefer the secrets file (immune to env var pollution)
+            api_key = self._secrets._read().get(provider)
+            if not api_key:
+                # Fall back to env var (may have been set externally by user)
+                from plutus.config import PROVIDER_ENV_VARS
+                env_var = PROVIDER_ENV_VARS.get(provider, f"{provider.upper()}_API_KEY")
+                api_key = os.environ.get(env_var)
             if api_key:
-                kwargs["api_key"] = api_key
+                # Validate the key doesn't belong to a different provider
+                api_key = self._validate_key_for_provider(api_key, provider)
+                if api_key:
+                    kwargs["api_key"] = api_key
         kwargs.update(overrides)
         return kwargs
+
+    def _validate_key_for_provider(self, key: str, provider: str) -> str | None:
+        """Detect and reject keys that clearly belong to a different provider.
+
+        For example, an Anthropic key (sk-ant-...) being used for OpenAI.
+        Returns the key if valid, or the correct key from the secrets file
+        if a mismatch is detected.
+        """
+        # Identify which provider this key actually belongs to by checking
+        # prefixes in order (most-specific first to avoid sk-ant- matching sk-).
+        detected_owner: str | None = None
+        for prefix, owner in self._KEY_OWNER:
+            if key.startswith(prefix):
+                detected_owner = owner
+                break  # first (most-specific) match wins
+
+        # If we can identify the key's owner and it's NOT the target provider,
+        # we have a cross-contamination problem.
+        if detected_owner and detected_owner != provider:
+            logger.error(
+                f"API key mismatch! Key '{key[:10]}...' belongs to "
+                f"{detected_owner} but is being used for {provider}. "
+                f"Attempting to resolve the correct key from secrets file."
+            )
+            # Read directly from the secrets file, bypassing os.environ
+            # which is likely polluted.
+            correct_key = self._secrets._read().get(provider)
+            if correct_key and correct_key != key:
+                logger.info(
+                    f"Found correct {provider} key in secrets file. Using it."
+                )
+                # Also fix the polluted env var so subsequent calls are correct
+                from plutus.config import PROVIDER_ENV_VARS
+                env_var = PROVIDER_ENV_VARS.get(provider, f"{provider.upper()}_API_KEY")
+                os.environ[env_var] = correct_key
+                return correct_key
+            logger.warning(
+                f"No separate {provider} key found in secrets file. "
+                f"The key may have been stored under the wrong provider."
+            )
+            return None
+        return key
 
     def _expand_attachments(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert messages with 'attachments' into multimodal content blocks.
