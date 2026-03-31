@@ -327,13 +327,50 @@ class TelegramConnector(BaseConnector):
         caption: str = "",
         chat_id: str | int | None = None,
     ) -> dict[str, Any]:
-        """Send a voice message via Telegram (displayed as a playable voice note)."""
+        """Send a voice message via Telegram (displayed as a playable voice note).
+
+        Telegram requires OGG/Opus format for voice notes.  If the file is
+        already .ogg it is sent directly; otherwise we attempt an ffmpeg
+        conversion first so the message appears as a playable voice bubble
+        rather than a generic audio file attachment.
+        """
         import os
         target = chat_id or self._chat_id
         if not target:
             return {"success": False, "message": "No chat_id configured"}
 
         try:
+            # Ensure OGG/Opus format for proper voice note display
+            send_path = file_path
+            if not file_path.lower().endswith(".ogg"):
+                ogg_path = file_path.rsplit(".", 1)[0] + ".ogg"
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "ffmpeg", "-i", file_path, "-c:a", "libopus",
+                        "-b:a", "32k", "-vn", ogg_path,
+                        "-y", "-loglevel", "error",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    _, stderr = await proc.communicate()
+                    if proc.returncode == 0:
+                        send_path = ogg_path
+                    else:
+                        logger.warning(
+                            f"ffmpeg ogg conversion failed, sending original: "
+                            f"{stderr.decode()[:200]}"
+                        )
+                except FileNotFoundError:
+                    logger.warning("ffmpeg not found, sending original file")
+
+            # Determine content type based on actual file being sent
+            if send_path.lower().endswith(".ogg"):
+                content_type = "audio/ogg"
+                filename = "voice.ogg"
+            else:
+                content_type = "audio/mpeg"
+                filename = os.path.basename(send_path)
+
             session = await self._get_send_session()
             url = f"{self._api_url}/sendVoice"
 
@@ -343,8 +380,9 @@ class TelegramConnector(BaseConnector):
                 data.add_field("caption", caption[:1024])
             data.add_field(
                 "voice",
-                open(file_path, "rb"),
-                filename=os.path.basename(file_path),
+                open(send_path, "rb"),
+                filename=filename,
+                content_type=content_type,
             )
 
             async with session.post(url, data=data) as resp:
