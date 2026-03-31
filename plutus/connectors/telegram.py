@@ -604,8 +604,16 @@ class TelegramConnector(BaseConnector):
                                 metadata["voice_memo"] = True
                                 metadata["voice_file"] = local_path
                                 metadata["voice_duration"] = duration
+
+                                # Prefix with [Voice memo] so the agent knows
+                                # this was spoken, not typed (matches cloud behaviour)
+                                voice_text = (
+                                    f"[Voice memo] {transcribed}"
+                                    if transcribed
+                                    else "[Voice memo \u2014 transcription failed]"
+                                )
                                 try:
-                                    await self._on_message(transcribed, metadata)
+                                    await self._on_message(voice_text, metadata)
                                 except Exception as e:
                                     logger.exception(f"Error in message handler: {e}")
                                     try:
