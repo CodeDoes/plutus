@@ -352,23 +352,27 @@ class LLMClient:
         Returns True if a key is available, False otherwise.
         Does NOT crash — the server can start without a key and prompt the user.
         """
+        from plutus.config import PROVIDER_ENV_VARS
+
         if self._config.provider in ("ollama", "local"):
             return True
+
+        # Derive the correct env-var name from the provider, never trust the
+        # potentially stale api_key_env that may linger from a previous provider.
+        env_var = PROVIDER_ENV_VARS.get(
+            self._config.provider,
+            f"{self._config.provider.upper()}_API_KEY",
+        )
 
         # Try secrets store (checks env var first, then file)
         key = self._secrets.get_key(self._config.provider)
         if key:
-            # Always overwrite os.environ so a stale or wrong key from a previous
-            # provider never blocks the real key.  The startup inject_all() guard
-            # ("don't overwrite existing env vars") is intentional for startup only;
-            # here we are explicitly reloading so we must force the update.
-            env_var = self._config.api_key_env
             os.environ[env_var] = key
             return True
 
         logger.warning(
             f"No API key found for {self._config.provider}. "
-            f"Set {self._config.api_key_env} or use the web UI to configure."
+            f"Set {env_var} or use the web UI to configure."
         )
         return False
 

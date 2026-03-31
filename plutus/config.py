@@ -207,6 +207,14 @@ class PlutusConfig(BaseSettings):
         """Merge a partial config dict and save."""
         current = self.model_dump()
         _deep_merge(current, patch)
+        # Auto-correct api_key_env when provider changes so a stale env-var
+        # name from the previous provider never persists after a switch.
+        model_patch = current.get("model")
+        if isinstance(model_patch, dict) and "provider" in (patch.get("model") or {}):
+            new_provider = model_patch["provider"]
+            model_patch["api_key_env"] = PROVIDER_ENV_VARS.get(
+                new_provider, f"{new_provider.upper()}_API_KEY"
+            )
         new_cfg = PlutusConfig(**current)
         # Copy merged values back
         for field in self.model_fields:

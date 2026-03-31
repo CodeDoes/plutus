@@ -819,18 +819,21 @@ def create_router() -> APIRouter:
         # Hot-reload the agent's LLM client when model settings change so the
         # user doesn't need to restart the server after switching models.
         if "model" in body.patch:
-            # Force-inject the correct API key for the new provider into os.environ.
-            # This prevents a stale key from a previous provider (e.g. an Anthropic
-            # key sitting in OPENAI_API_KEY) from being used instead of the real one.
+            import os as _os
+            from plutus.config import PROVIDER_ENV_VARS
+
             secrets = state.get("secrets")
             if secrets:
                 new_provider = config.model.provider
-                new_key = secrets.get_key(new_provider)
-                if new_key:
-                    from plutus.config import PROVIDER_ENV_VARS
-                    env_var = PROVIDER_ENV_VARS.get(new_provider, f"{new_provider.upper()}_API_KEY")
-                    import os as _os
-                    _os.environ[env_var] = new_key
+                # Re-inject ALL provider keys into os.environ so that:
+                #  1. The new provider's key is correct.
+                #  2. Other providers' env vars are restored to their real keys
+                #     (prevents a stale Anthropic key sitting in OPENAI_API_KEY
+                #      from breaking transcription or other OpenAI-dependent tools).
+                for prov, env_var in PROVIDER_ENV_VARS.items():
+                    real_key = secrets.get_key(prov)
+                    if real_key:
+                        _os.environ[env_var] = real_key
 
             agent = state.get("agent")
             if agent is not None:
