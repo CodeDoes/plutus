@@ -182,6 +182,13 @@ $PYTHON_CMD -m pip install --upgrade "plutus-ai" 2>/tmp/plutus_install_err.txt |
 }
 rm -f /tmp/plutus_install_err.txt
 
+# Ensure ffmpeg is available (needed for voice memo transcription).
+# imageio-ffmpeg ships a bundled static binary — no OS package needed.
+if ! $PYTHON_CMD -c "import imageio_ffmpeg" >/dev/null 2>&1; then
+    echo "       Installing ffmpeg support..."
+    $PYTHON_CMD -m pip install --upgrade "imageio-ffmpeg>=0.5.1" >/dev/null 2>&1 || true
+fi
+
 echo "       Plutus installed."
 
 # ── Step 3: Create Launcher & Shortcut ────────────────────

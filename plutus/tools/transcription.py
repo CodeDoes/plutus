@@ -27,6 +27,27 @@ from plutus.tools.base import Tool
 
 logger = logging.getLogger("plutus.tools.transcription")
 
+
+def _find_ffmpeg() -> str:
+    """Locate the ffmpeg binary.
+
+    Priority:
+      1. imageio-ffmpeg bundled binary (cross-platform, installed via pip)
+      2. System-level ffmpeg on PATH
+    """
+    # 1. Try imageio-ffmpeg (ships a static binary for Win/macOS/Linux)
+    try:
+        import imageio_ffmpeg
+
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe:
+            return exe
+    except Exception:
+        pass
+
+    # 2. Fall back to system ffmpeg
+    return "ffmpeg"
+
 # Supported audio formats (superset of Telegram/WhatsApp/UI formats)
 SUPPORTED_FORMATS = {
     ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm",
@@ -274,10 +295,11 @@ class TranscriptionTool(Tool):
 
     async def _convert_to_mp3(self, path: Path) -> tuple[Path | None, Any]:
         """Convert audio to mp3 using ffmpeg (for formats OpenAI doesn't accept natively)."""
+        ffmpeg_bin = _find_ffmpeg()
         try:
             tmp = Path(tempfile.mktemp(suffix=".mp3"))
             proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-i", str(path), "-vn", "-ar", "16000",
+                ffmpeg_bin, "-i", str(path), "-vn", "-ar", "16000",
                 "-ac", "1", "-ab", "128k", "-f", "mp3", str(tmp),
                 "-y", "-loglevel", "error",
                 stdout=asyncio.subprocess.PIPE,
@@ -293,8 +315,9 @@ class TranscriptionTool(Tool):
 
         except FileNotFoundError:
             return None, (
-                "Error: ffmpeg not found. Install it with: "
-                "sudo apt install ffmpeg (Linux) or brew install ffmpeg (macOS)"
+                "Error: ffmpeg not found. Try: pip install imageio-ffmpeg\n"
+                "Or install system-wide: sudo apt install ffmpeg (Linux), "
+                "brew install ffmpeg (macOS), or winget install ffmpeg (Windows)"
             )
         except Exception as e:
             return None, f"Error converting audio: {e}"

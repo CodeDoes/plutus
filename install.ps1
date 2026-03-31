@@ -230,7 +230,15 @@ if ($pipExit -ne 0) {
 $depCheck = & $pythonFull -c "import fastapi; import uvicorn; import pydantic; print('ok')" 2>$null
 if ($depCheck -ne "ok") {
     Write-Host "       Installing missing dependencies..." -ForegroundColor DarkGray
-    & $pythonFull -m pip install --upgrade "fastapi>=0.115.0" "uvicorn[standard]>=0.32.0" "pydantic>=2.10.0" "websockets>=14.0" "click>=8.1.0" "rich>=13.9.0" "aiosqlite>=0.20.0" "httpx>=0.28.0" "psutil>=6.1.0" "litellm>=1.55.0" *>$null
+    & $pythonFull -m pip install --upgrade "fastapi>=0.115.0" "uvicorn[standard]>=0.32.0" "pydantic>=2.10.0" "websockets>=14.0" "click>=8.1.0" "rich>=13.9.0" "aiosqlite>=0.20.0" "httpx>=0.28.0" "psutil>=6.1.0" "litellm>=1.55.0" "imageio-ffmpeg>=0.5.1" *>$null
+}
+
+# Ensure ffmpeg is available (needed for voice memo transcription).
+# imageio-ffmpeg ships a bundled binary, but verify it's installed.
+$ffmpegCheck = & $pythonFull -c "import imageio_ffmpeg; print('ok')" 2>$null
+if ($ffmpegCheck -ne "ok") {
+    Write-Host "       Installing ffmpeg support..." -ForegroundColor DarkGray
+    & $pythonFull -m pip install --upgrade "imageio-ffmpeg>=0.5.1" *>$null
 }
 
 Write-Host "       Plutus installed successfully." -ForegroundColor Green
